@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.SSLContext;
@@ -116,22 +117,20 @@ public class WebSocketConnection extends WebSocketListener {
     }
 
     if (keepAliveSender != null) {
-      keepAliveSender.shutdown();
+      keepAliveSender.interrupt();
       keepAliveSender = null;
     }
   }
 
   public synchronized WebSocketRequestMessage readRequest(long timeoutMillis)
-      throws TimeoutException, IOException
+      throws TimeoutException, IOException, InterruptedException
   {
     if (client == null) {
       throw new IOException("Connection closed!");
     }
 
-    long startTime = System.currentTimeMillis();
-
-    while (client != null && incomingRequests.isEmpty() && elapsedTime(startTime) < timeoutMillis) {
-      Util.wait(this, Math.max(1, timeoutMillis - elapsedTime(startTime)));
+    if (client != null && incomingRequests.isEmpty()) {
+        wait(Math.max(1, timeoutMillis));
     }
 
     if      (incomingRequests.isEmpty() && client == null) throw new IOException("Connection closed!");
@@ -172,21 +171,15 @@ public class WebSocketConnection extends WebSocketListener {
     }
   }
 
-  private synchronized void sendKeepAlive() throws IOException {
-    if (keepAliveSender != null && client != null) {
-      byte[] message = WebSocketMessage.newBuilder()
-                                       .setType(WebSocketMessage.Type.REQUEST)
-                                       .setRequest(WebSocketRequestMessage.newBuilder()
-                                                                          .setId(System.currentTimeMillis())
-                                                                          .setPath("/v1/keepalive")
-                                                                          .setVerb("GET")
-                                                                          .build()).build()
-                                       .toByteArray();
+  private synchronized Future<Pair<Integer, String>> sendKeepAlive() throws IOException {
+    if (keepAliveSender == null || client == null) throw new IOException("Can't send KeepAlive Message!");
 
-      if (!client.send(ByteString.of(message))) {
-        throw new IOException("Write failed!");
-      }
-    }
+    WebSocketRequestMessage request = WebSocketRequestMessage.newBuilder()
+                                                             .setId(System.currentTimeMillis())
+                                                             .setPath("/v1/keepalive")
+                                                             .setVerb("GET")
+                                                             .build();
+    return sendRequest(request);
   }
 
   @Override
@@ -238,7 +231,7 @@ public class WebSocketConnection extends WebSocketListener {
     }
 
     if (keepAliveSender != null) {
-      keepAliveSender.shutdown();
+      keepAliveSender.interrupt();
       keepAliveSender = null;
     }
 
@@ -301,33 +294,35 @@ public class WebSocketConnection extends WebSocketListener {
 
   private class KeepAliveSender extends Thread {
 
-    private AtomicBoolean stop = new AtomicBoolean(false);
-
     public void run() {
       final long timeoutMillis = TimeUnit.SECONDS.toMillis(KEEPALIVE_TIMEOUT_SECONDS);
+      Future future = null;
 
-      while (!stop.get()) {
-        final long startTime = System.currentTimeMillis();
+      while (true) {
+        try {
+            sleepTimer.sleep(timeoutMillis);
 
-        while (elapsedTime(startTime) < timeoutMillis) {
-          try {
-            sleepTimer.sleep(timeoutMillis - elapsedTime(startTime));
-          } catch (Throwable e) {
-            Log.w(TAG, e);
-          }
+            if (future != null) {
+              try {
+                future.get(0L, TimeUnit.SECONDS);
+              } catch (ExecutionException | TimeoutException e){
+                Log.w(TAG, "No response to previous keep-alive; forcing new connection");
+                disconnect();
+                return;
+              }
+            }
+        } catch (InterruptedException e) {
+          Log.w(TAG, "Keep-alive sender thread interrupted; exiting.");
+          return;
         }
 
         Log.w(TAG, "Sending keep alive...");
         try {
-          sendKeepAlive();
+          future = sendKeepAlive();
         } catch (Throwable e) {
           Log.w(TAG, e);
         }
       }
-    }
-
-    public void shutdown() {
-      stop.set(true);
     }
   }
 

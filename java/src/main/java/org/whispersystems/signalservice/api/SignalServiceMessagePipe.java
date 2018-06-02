@@ -63,7 +63,7 @@ public class SignalServiceMessagePipe {
    * @throws TimeoutException
    */
   public SignalServiceEnvelope read(long timeout, TimeUnit unit)
-      throws InvalidVersionException, IOException, TimeoutException
+      throws InvalidVersionException, IOException, TimeoutException, InterruptedException
   {
     return read(timeout, unit, new NullMessagePipeCallback());
   }
@@ -86,7 +86,7 @@ public class SignalServiceMessagePipe {
    * @throws InvalidVersionException
    */
   public SignalServiceEnvelope read(long timeout, TimeUnit unit, MessagePipeCallback callback)
-      throws TimeoutException, IOException, InvalidVersionException
+      throws TimeoutException, IOException, InvalidVersionException, InterruptedException
   {
     while (true) {
       WebSocketRequestMessage  request  = websocket.readRequest(unit.toMillis(timeout));
